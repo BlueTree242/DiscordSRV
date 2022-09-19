@@ -31,9 +31,12 @@ import org.bukkit.event.Event;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.RegisteredListener;
+import org.bukkit.plugin.java.PluginClassLoader;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.net.URLClassLoader;
 import java.util.Iterator;
 import java.util.List;
@@ -168,6 +171,56 @@ public class PluginUtil {
         for (Plugin plugin : Bukkit.getPluginManager().getPlugins())
             if (plugin.getName().equalsIgnoreCase(pluginName)) return plugin;
         return null;
+    }
+
+    /**
+     * Invoke the given method on the given instance with the given args
+     * @param method the method to invoke
+     * @param instance the instance of the class to invoke on
+     * @param args arguments for the method
+     * @return whether the method executed without exception
+     */
+    @SuppressWarnings("UnusedReturnValue")
+    public static boolean invokeMethod(Method method, Object instance, Object... args) {
+        // make sure method is accessible
+        //noinspection deprecation
+        if (!method.isAccessible()) method.setAccessible(true);
+
+        try {
+            method.invoke(instance, method.getParameterCount() == 0 ? null : args);
+            return true;
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            DiscordSRV.debug(instance.getClass().getName() + "#" + method.getName() + " threw an error: " + cause);
+            if (!logException(method.getClass(), cause)) cause.printStackTrace();
+        } catch (IllegalAccessException e) {
+            // this should never happen
+            DiscordSRV.error(
+                    LangUtil.InternalMessage.API_LISTENER_METHOD_NOT_ACCESSIBLE.toString()
+                            .replace("{listenername}", method.getClass().getName())
+                            .replace("{methodname}", method.toString()),
+                    e
+            );
+        }
+        return false;
+    }
+
+    /**
+     * Attempt to find the owning {@link Plugin} of the offending class and print the provided throwable to it's logger
+     * @param offendingClass the offending plugin class
+     * @param throwable throwable to print
+     * @return whether the plugin was successfully determined
+     */
+    private static boolean logException(Class<?> offendingClass, Throwable throwable) {
+        try {
+            ClassLoader classLoader = offendingClass.getClassLoader();
+            if (classLoader instanceof PluginClassLoader) {
+                Plugin owner = ((PluginClassLoader) classLoader).getPlugin();
+                DiscordSRV.logThrowable(throwable, owner.getLogger()::severe);
+                return true;
+            }
+        } catch (Throwable ignored) {}
+        return false;
     }
 
 }

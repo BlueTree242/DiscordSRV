@@ -22,12 +22,15 @@
 
 package github.scarsz.discordsrv.api.commands;
 
+import com.hrakaroo.glob.GlobPattern;
 import github.scarsz.discordsrv.api.ApiManager;
+import github.scarsz.discordsrv.util.PluginUtil;
 import net.dv8tion.jda.api.events.interaction.SlashCommandEvent;
 import net.dv8tion.jda.api.interactions.InteractionHook;
 import net.dv8tion.jda.api.interactions.commands.CommandInteraction;
 import org.bukkit.plugin.Plugin;
 
+import java.lang.reflect.Method;
 import java.util.Set;
 
 /**
@@ -43,5 +46,23 @@ import java.util.Set;
 public interface SlashCommandProvider {
 
     Set<PluginSlashCommand> getSlashCommands();
+
+    default void handleSlashCommandEvent(SlashCommandEvent event, SlashCommandPriority priority) {
+        for (Method method : this.getClass().getMethods()) {
+            for (SlashCommand slashCommand : method.getAnnotationsByType(SlashCommand.class)) {
+                if (slashCommand.priority() != priority) continue;
+                if (!slashCommand.ignoreAcknowledged() && event.isAcknowledged()) continue;
+                if (!GlobPattern.compile(slashCommand.path()).matches(event.getCommandPath())) continue;
+                if (method.getParameters().length != 1 || !method.getParameters()[0].getType().equals(SlashCommandEvent.class)) continue;
+
+                if (!slashCommand.deferReply()) {
+                    PluginUtil.invokeMethod(method, this, event);
+                } else {
+                    event.deferReply(slashCommand.deferEphemeral())
+                            .queue(hook -> PluginUtil.invokeMethod(method, this, event));
+                }
+            }
+        }
+    }
 
 }
