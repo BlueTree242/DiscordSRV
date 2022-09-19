@@ -23,15 +23,16 @@
 package github.scarsz.discordsrv.api;
 
 import com.google.common.collect.Sets;
+import com.hrakaroo.glob.GlobPattern;
 import github.scarsz.discordsrv.DiscordSRV;
 import github.scarsz.discordsrv.api.commands.CommandRegistrationError;
 import github.scarsz.discordsrv.api.commands.PluginSlashCommand;
+import github.scarsz.discordsrv.api.commands.SlashCommand;
 import github.scarsz.discordsrv.api.commands.SlashCommandPriority;
 import github.scarsz.discordsrv.api.commands.SlashCommandProvider;
 import github.scarsz.discordsrv.api.events.Event;
 import github.scarsz.discordsrv.api.events.GuildSlashCommandUpdateEvent;
 import github.scarsz.discordsrv.util.LangUtil;
-import github.scarsz.discordsrv.util.PluginUtil;
 import lombok.NonNull;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.events.interaction.SlashCommandEvent;
@@ -45,8 +46,10 @@ import net.dv8tion.jda.api.requests.RestAction;
 import net.dv8tion.jda.api.utils.cache.CacheFlag;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
+import org.bukkit.plugin.java.PluginClassLoader;
 import org.jetbrains.annotations.NotNull;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -156,7 +159,7 @@ public class ApiManager extends ListenerAdapter {
                     if (subscribeAnnotation.priority() != listenerPriority)
                         continue; // this priority isn't being called right now
 
-                    PluginUtil.invokeMethod(method, apiListener, event);
+                    invokeMethod(method, apiListener, event);
                 }
             }
         }
@@ -275,7 +278,7 @@ public class ApiManager extends ListenerAdapter {
     }
 
     /**
-     * Event listener for JDA {@link SlashCommandEvent}. Calls the {@link SlashCommandProvider#handleSlashCommandEvent(SlashCommandEvent, SlashCommandPriority)} on every provider.
+     * Event listener for JDA {@link SlashCommandEvent}. Automatically routes events to {@link SlashCommand}-annotated methods on registered command providers.
      */
     @Override
     public void onSlashCommand(@NotNull SlashCommandEvent event) {
@@ -295,11 +298,86 @@ public class ApiManager extends ListenerAdapter {
 
         for (SlashCommandPriority priority : SlashCommandPriority.values()) {
             for (SlashCommandProvider provider : providers) {
-                provider.handleSlashCommandEvent(event, priority);
+                handleSlashCommandEvent(provider, commandData, event, priority);
             }
         }
 
         ackCheck(event, commandData.getPlugin());
+    }
+
+    /**
+     * Go through a {@link SlashCommandProvider} and invoke methods that listen to the provided slash command
+     * @param provider the {@link SlashCommandProvider} to be searched and potentially invoked
+     * @param commandData the {@link PluginSlashCommand} data associated with this {@link SlashCommandEvent}
+     * @param event the {@link SlashCommandEvent} to be handled
+     * @param priority only handlers with the given {@link SlashCommandPriority} will be invoked
+     */
+    private void handleSlashCommandEvent(SlashCommandProvider provider, PluginSlashCommand commandData, SlashCommandEvent event, SlashCommandPriority priority) {
+        for (Method method : provider.getClass().getMethods()) {
+            for (SlashCommand slashCommand : method.getAnnotationsByType(SlashCommand.class)) {
+                if (slashCommand.priority() != priority) continue;
+                if (!slashCommand.ignoreAcknowledged() && event.isAcknowledged()) continue;
+                if (!GlobPattern.compile(slashCommand.path()).matches(event.getCommandPath())) continue;
+                if (method.getParameters().length != 1 || !method.getParameters()[0].getType().equals(SlashCommandEvent.class)) continue;
+
+                if (!slashCommand.deferReply()) {
+                    invokeMethod(method, provider, event);
+                } else {
+                    event.deferReply(slashCommand.deferEphemeral())
+                            .queue(hook -> invokeMethod(method, provider, event));
+                }
+            }
+        }
+    }
+
+    /**
+     * Invoke the given method on the given instance with the given args
+     * @param method the method to invoke
+     * @param instance the instance of the class to invoke on
+     * @param args arguments for the method
+     * @return whether the method executed without exception
+     */
+    @SuppressWarnings("UnusedReturnValue")
+    private boolean invokeMethod(Method method, Object instance, Object... args) {
+        // make sure method is accessible
+        //noinspection deprecation
+        if (!method.isAccessible()) method.setAccessible(true);
+
+        try {
+            method.invoke(instance, method.getParameterCount() == 0 ? null : args);
+            return true;
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            DiscordSRV.debug(instance.getClass().getName() + "#" + method.getName() + " threw an error: " + cause);
+            if (!logException(method.getClass(), cause)) cause.printStackTrace();
+        } catch (IllegalAccessException e) {
+            // this should never happen
+            DiscordSRV.error(
+                    LangUtil.InternalMessage.API_LISTENER_METHOD_NOT_ACCESSIBLE.toString()
+                            .replace("{listenername}", method.getClass().getName())
+                            .replace("{methodname}", method.toString()),
+                    e
+            );
+        }
+        return false;
+    }
+
+    /**
+     * Attempt to find the owning {@link Plugin} of the offending class and print the provided throwable to it's logger
+     * @param offendingClass the offending plugin class
+     * @param throwable throwable to print
+     * @return whether the plugin was successfully determined
+     */
+    private boolean logException(Class<?> offendingClass, Throwable throwable) {
+        try {
+            ClassLoader classLoader = offendingClass.getClassLoader();
+            if (classLoader instanceof PluginClassLoader) {
+                Plugin owner = ((PluginClassLoader) classLoader).getPlugin();
+                DiscordSRV.logThrowable(throwable, owner.getLogger()::severe);
+                return true;
+            }
+        } catch (Throwable ignored) {}
+        return false;
     }
 
     /**
