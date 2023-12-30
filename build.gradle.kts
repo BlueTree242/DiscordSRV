@@ -180,6 +180,7 @@ repositories {
     maven("https://oss.sonatype.org/content/repositories/snapshots")
     maven("https://s01.oss.sonatype.org/content/repositories/snapshots")
     maven("https://nexus.scarsz.me/content/groups/public/")
+    maven("https://jitpack.io")
 }
 
 dependencies {
@@ -294,6 +295,10 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter-api:5.9.0")
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.9.0")
     testImplementation("io.papermc.paper:paper-api:${minecraftVersion}-R0.1-SNAPSHOT")
+
+    //UAR
+    compileOnly("com.github.N0RSKA:UltimateAutoRestartAPI:2023.12")
+
 }
 
 tasks {

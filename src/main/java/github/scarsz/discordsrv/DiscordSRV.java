@@ -27,6 +27,8 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.neovisionaries.ws.client.DualStackMode;
 import com.neovisionaries.ws.client.WebSocketFactory;
+import dev.norska.uar.UltimateAutoRestart;
+import dev.norska.uar.api.UARAPI;
 import github.scarsz.configuralize.DynamicConfig;
 import github.scarsz.configuralize.Language;
 import github.scarsz.configuralize.ParseException;
@@ -989,7 +991,7 @@ public class DiscordSRV extends JavaPlugin {
         SchedulerUtil.runTaskLater(this, () -> {
             DiscordUtil.queueMessage(
                     getOptionalTextChannel("status"),
-                    PlaceholderUtil.replacePlaceholdersToDiscord(LangUtil.Message.SERVER_STARTUP_MESSAGE.toString()),
+                    UARAPI.getInterval(UltimateAutoRestart.getInstance()) <= 0 ? ":arrows_counterclockwise: Server is restarting!" : PlaceholderUtil.replacePlaceholdersToDiscord(LangUtil.Message.SERVER_STARTUP_MESSAGE.toString()),
                     true
             );
         }, 20);

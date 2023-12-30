@@ -21,6 +21,8 @@ softdepend: [
   Multiverse-Core, Vault, PlaceholderAPI, mcMMO, LuckPerms, dynmap, Skript
 ]
 
+depend: [UltimateAutoRestart]
+
 commands:
   discord:
     aliases: [discordsrv]
