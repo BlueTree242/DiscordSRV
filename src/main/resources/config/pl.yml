@@ -2,7 +2,7 @@
 # Potrzebuję pomocy? Dołącz do naszego Discorda, https://discordsrv.com/discord
 
 # Nie ruszaj tego
-ConfigVersion: ${project.version}
+ConfigVersion: ${version}
 
 # Token bota; nie wiesz co to jest? Obejrzyj film na stronie wtyczki, aby uzyskać instrukcje
 # Po zmianie tej opcji musisz ponownie uruchomić serwer
@@ -82,6 +82,7 @@ Experiment_WebhookChatMessageUsernameFormat: "%displayname%"
 Experiment_WebhookChatMessageFormat: "%message%"
 Experiment_WebhookChatMessageUsernameFromDiscord: false
 Experiment_WebhookChatMessageAvatarFromDiscord: false
+Experiment_WebhookChatMessageUsernameFilters: {}
 
 # Osadzanie i formatowanie adresu URL obrazu/awataru w webhooku
 # Alternatywny adres URL wbudowanego awatara dla serwerów offline:
@@ -195,7 +196,6 @@ DiscordChatChannelRoleAliases: {"Developer": "Dev"}
 # DiscordConsoleChannelFilters: filtry regex do zastosowania do wierszy konsoli wysyłanych do Discorda, jeśli wynik jest pusty, wiadomość w ogóle nie zostanie wysłana
 # DiscordConsoleChannelLevels: poziomy do wysłania do kanału konsoli przez appender
 # DiscordConsoleChannelUseCodeBlocks: czy konsola powinna być zawinięta w bloki kodu i pokolorowana?
-# DiscordConsoleChannelAllowPluginUpload: czy przesyłanie wtyczek na kanał konsoli powinno automatycznie dodawać je do serwera
 # DiscordConsoleChannelBlockBots: czy boty powinny mieć możliwość wysyłania komend w kanale konsoli
 #
 DiscordConsoleChannelLogRefreshRateInSeconds: 5
@@ -205,8 +205,7 @@ DiscordConsoleChannelBlacklistedCommands: ["?", "op", "deop", "execute"]
 DiscordConsoleChannelFilters: {".*(?i)async chat thread.*": "", ".*There are \\d+ (?:of a max of|out of maximum) \\d+ players online.*": ""}
 DiscordConsoleChannelLevels: [info, warn, error]
 DiscordConsoleChannelUseCodeBlocks: true
-DiscordConsoleChannelAllowPluginUpload: false
-DiscordConsoleChannelBlockBots: false
+DiscordConsoleChannelBlockBots: true
 
 # Polecenie kanału czatu wykonaj polecenie
 # Te opcje kontrolują możliwość wypowiedzenia "!C kick Notch" lub dowolnego prefiksu, aby uruchomić polecenie,
@@ -251,7 +250,7 @@ DiscordChatChannelListCommandExpirationDeleteRequest: true
 # DiscordChatChannelDiscordFilters: filtry regex, które mają być stosowane do wiadomości czatu wysyłanych do Minecrafta, jeśli wynik jest pusty, wiadomość w ogóle nie zostanie wysłana
 #
 DiscordChatChannelGameFilters: {}
-DiscordChatChannelDiscordFilters: {".*Online players\\(.*": "", ".*\\*\\*No online players\\*\\*.*": ""}
+DiscordChatChannelDiscordFilters: {".*Online players \\(.*": "", ".*\\*\\*No online players\\*\\*.*": ""}
 
 # Ustawienia aktualizatora tematów kanału
 #

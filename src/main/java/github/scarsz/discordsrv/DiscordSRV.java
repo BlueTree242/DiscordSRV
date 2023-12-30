@@ -1,9 +1,8 @@
-/*-
- * LICENSE
- * DiscordSRV
- * -------------
- * Copyright (C) 2016 - 2021 Austin "Scarsz" Shapiro
- * -------------
+/*
+ * DiscordSRV - https://github.com/DiscordSRV/DiscordSRV
+ *
+ * Copyright (C) 2016 - 2022 Austin "Scarsz" Shapiro
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as
  * published by the Free Software Foundation, either version 3 of the
@@ -17,7 +16,6 @@
  * You should have received a copy of the GNU General Public
  * License along with this program.  If not, see
  * <http://www.gnu.org/licenses/gpl-3.0.html>.
- * END
  */
 
 package github.scarsz.discordsrv;
@@ -51,8 +49,9 @@ import github.scarsz.discordsrv.objects.managers.AccountLinkManager;
 import github.scarsz.discordsrv.objects.managers.CommandManager;
 import github.scarsz.discordsrv.objects.managers.GroupSynchronizationManager;
 import github.scarsz.discordsrv.objects.managers.IncompatibleClientManager;
-import github.scarsz.discordsrv.objects.managers.link.FileAccountLinkManager;
 import github.scarsz.discordsrv.objects.managers.link.JdbcAccountLinkManager;
+import github.scarsz.discordsrv.objects.managers.link.file.AppendOnlyFileAccountLinkManager;
+import github.scarsz.discordsrv.objects.proxy.AlwaysEnabledPluginDynamicProxy;
 import github.scarsz.discordsrv.objects.threads.*;
 import github.scarsz.discordsrv.util.*;
 import lombok.Getter;
@@ -92,27 +91,25 @@ import org.bstats.charts.AdvancedPie;
 import org.bstats.charts.DrilldownPie;
 import org.bstats.charts.SimplePie;
 import org.bstats.charts.SingleLineChart;
-import org.bukkit.*;
+import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
+import org.bukkit.OfflinePlayer;
+import org.bukkit.Warning;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.PluginCommand;
-import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
-import org.bukkit.generator.ChunkGenerator;
 import org.bukkit.metadata.MetadataValue;
 import org.bukkit.permissions.PermissionDefault;
 import org.bukkit.plugin.Plugin;
-import org.bukkit.plugin.PluginBase;
 import org.bukkit.plugin.PluginDescriptionFile;
-import org.bukkit.plugin.PluginLoader;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitWorker;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 import org.minidns.DnsClient;
 import org.minidns.dnsmessage.DnsMessage;
 import org.minidns.record.Record;
@@ -132,7 +129,6 @@ import java.util.concurrent.*;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
-import java.util.logging.Logger;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 import java.util.stream.Collectors;
@@ -177,9 +173,10 @@ public class DiscordSRV extends JavaPlugin {
     // Config
     @Getter private final Map<String, String> channels = new LinkedHashMap<>(); // <in-game channel name, discord channel>
     @Getter private final Map<String, String> roleAliases = new LinkedHashMap<>(); // key always lowercase
-    @Getter private final Map<Pattern, String> consoleRegexes = new HashMap<>();
-    @Getter private final Map<Pattern, String> gameRegexes = new HashMap<>();
-    @Getter private final Map<Pattern, String> discordRegexes = new HashMap<>();
+    @Getter private final Map<Pattern, String> consoleRegexes = new LinkedHashMap<>();
+    @Getter private final Map<Pattern, String> gameRegexes = new LinkedHashMap<>();
+    @Getter private final Map<Pattern, String> discordRegexes = new LinkedHashMap<>();
+    @Getter private final Map<Pattern, String> webhookUsernameRegexes = new LinkedHashMap<>();
     private final DynamicConfig config;
 
     // Debugger
@@ -202,7 +199,6 @@ public class DiscordSRV extends JavaPlugin {
     @Getter private final File alertsFile = new File(getDataFolder(), "alerts.yml");
     @Getter private final File debugFolder = new File(getDataFolder(), "debug");
     @Getter private final File logFolder = new File(getDataFolder(), "discord-console-logs");
-    @Getter private final File linkedAccountsFile = new File(getDataFolder(), "linkedaccounts.json");
 
     // JDA & JDA related
     @Getter private JDA jda = null;
@@ -264,6 +260,10 @@ public class DiscordSRV extends JavaPlugin {
         synchronized (discordRegexes) {
             discordRegexes.clear();
             loadRegexesFromConfig(config().dget("DiscordChatChannelDiscordFilters"), discordRegexes);
+        }
+        synchronized (webhookUsernameRegexes) {
+            webhookUsernameRegexes.clear();
+            loadRegexesFromConfig(config().dget("Experiment_WebhookChatMessageUsernameFilters"), webhookUsernameRegexes);
         }
     }
     private void loadRegexesFromConfig(final Dynamic dynamic, final Map<Pattern, String> map) {
@@ -484,10 +484,15 @@ public class DiscordSRV extends JavaPlugin {
             getLogger().severe("DiscordSRV failed to load properly: " + e.getMessage() + ". See " + github.scarsz.discordsrv.util.DebugUtil.run("DiscordSRV") + " for more information. Can't figure it out? Go to https://discordsrv.com/discord for help");
         });
         initThread.start();
+
+
+        if (Bukkit.getWorlds().size() > 0) {
+            playerDataFolder = new File(Bukkit.getWorlds().get(0).getWorldFolder().getAbsolutePath(), "/playerdata");
+        }
     }
 
     public void disablePlugin() {
-        Bukkit.getScheduler().runTask(
+        SchedulerUtil.runTask(
                 this,
                 () -> Bukkit.getPluginManager().disablePlugin(this)
         );
@@ -499,108 +504,7 @@ public class DiscordSRV extends JavaPlugin {
                 if (!owningPlugin.isAccessible()) owningPlugin.setAccessible(true);
 
                 // make the command's owning plugin always enabled (give a better error to the user)
-                owningPlugin.set(pluginCommand, new PluginBase() {
-                    @Override
-                    public @NotNull File getDataFolder() {
-                        return DiscordSRV.this.getDataFolder();
-                    }
-
-                    @Override
-                    public @NotNull PluginDescriptionFile getDescription() {
-                        return DiscordSRV.this.getDescription();
-                    }
-
-                    @Override
-                    public @NotNull FileConfiguration getConfig() {
-                        return DiscordSRV.this.getConfig();
-                    }
-
-                    @Override
-                    public @Nullable InputStream getResource(@NotNull String filename) {
-                        return DiscordSRV.this.getResource(filename);
-                    }
-
-                    @Override
-                    public void saveConfig() {
-                        DiscordSRV.this.saveConfig();
-                    }
-
-                    @Override
-                    public void saveDefaultConfig() {
-                        DiscordSRV.this.saveDefaultConfig();
-                    }
-
-                    @Override
-                    public void saveResource(@NotNull String resourcePath, boolean replace) {
-                        DiscordSRV.this.saveResource(resourcePath, replace);
-                    }
-
-                    @Override
-                    public void reloadConfig() {
-                        DiscordSRV.this.reloadConfig();
-                    }
-
-                    @Override
-                    public @NotNull PluginLoader getPluginLoader() {
-                        return DiscordSRV.this.getPluginLoader();
-                    }
-
-                    @Override
-                    public @NotNull Server getServer() {
-                        return DiscordSRV.this.getServer();
-                    }
-
-                    @Override
-                    public boolean isEnabled() {
-                        // otherwise PluginCommand throws a exception
-                        return true;
-                    }
-
-                    @Override
-                    public void onDisable() {
-                        DiscordSRV.this.onDisable();
-                    }
-
-                    @Override
-                    public void onLoad() {
-                        DiscordSRV.this.onLoad();
-                    }
-
-                    @Override
-                    public void onEnable() {
-                        DiscordSRV.this.onEnable();
-                    }
-
-                    @Override
-                    public boolean isNaggable() {
-                        return DiscordSRV.this.isNaggable();
-                    }
-
-                    @Override
-                    public void setNaggable(boolean canNag) {
-                        DiscordSRV.this.setNaggable(canNag);
-                    }
-
-                    @Override
-                    public @Nullable ChunkGenerator getDefaultWorldGenerator(@NotNull String worldName, @Nullable String id) {
-                        return DiscordSRV.this.getDefaultWorldGenerator(worldName, id);
-                    }
-
-                    @Override
-                    public @NotNull Logger getLogger() {
-                        return DiscordSRV.this.getLogger();
-                    }
-
-                    @Override
-                    public boolean onCommand(@NotNull CommandSender sender, @NotNull Command command, @NotNull String label, @NotNull String[] args) {
-                        return DiscordSRV.this.onCommand(sender, command, label, args);
-                    }
-
-                    @Override
-                    public @Nullable List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command command, @NotNull String alias, @NotNull String[] args) {
-                        return DiscordSRV.this.onTabComplete(sender, command, alias, args);
-                    }
-                });
+                owningPlugin.set(pluginCommand, new AlwaysEnabledPluginDynamicProxy().getProxy(this));
             } catch (Throwable ignored) {}
         }
     }
@@ -982,7 +886,7 @@ public class DiscordSRV extends JavaPlugin {
                 presenceUpdater.interrupt();
                 presenceUpdater = new PresenceUpdater();
             }
-            Bukkit.getScheduler().runTaskLater(this, () -> presenceUpdater.start(), 5 * 20);
+            SchedulerUtil.runTaskLater(this, () -> presenceUpdater.start(), 5 * 20);
         } else {
             presenceUpdater = new PresenceUpdater();
             presenceUpdater.start();
@@ -994,7 +898,7 @@ public class DiscordSRV extends JavaPlugin {
                 nicknameUpdater.interrupt();
                 nicknameUpdater = new NicknameUpdater();
             }
-            Bukkit.getScheduler().runTaskLater(this, () -> nicknameUpdater.start(), 5 * 20);
+            SchedulerUtil.runTaskLater(this, () -> nicknameUpdater.start(), 5 * 20);
         } else {
             nicknameUpdater = new NicknameUpdater();
             nicknameUpdater.start();
@@ -1027,14 +931,19 @@ public class DiscordSRV extends JavaPlugin {
                 }, config -> {
                     config.setUseCodeBlocks(config().getBooleanElse("DiscordConsoleChannelUseCodeBlocks", true));
                     config.setLoggerNamePadding(config().getIntElse("DiscordConsoleChannelPadding", 0));
-                    Set<LogLevel> configuredLevels = config().getStringList("DiscordConsoleChannelLevels").stream().map(String::toUpperCase).map(s -> {
-                        try {
-                            return LogLevel.valueOf(s);
-                        } catch (IllegalArgumentException e) {
-                            DiscordSRV.error("Invalid console logging level '" + s + "', valid options are " + Arrays.stream(LogLevel.values()).map(LogLevel::name).collect(Collectors.joining(", ")));
-                            return null;
-                        }
-                    }).filter(Objects::nonNull).collect(Collectors.toSet());
+                    Set<LogLevel> configuredLevels = config().getStringList("DiscordConsoleChannelLevels").stream()
+                            .map(value -> value.toUpperCase(Locale.ROOT))
+                            .map(s -> {
+                                try {
+                                    return LogLevel.valueOf(s);
+                                } catch (IllegalArgumentException e) {
+                                    DiscordSRV.error("Invalid console logging level '" + s + "', valid options are " + Arrays.stream(LogLevel.values()).map(LogLevel::name).collect(Collectors.joining(", ")));
+                                    return null;
+                                }
+                            })
+                            .filter(Objects::nonNull)
+                            .collect(Collectors.toSet());
+
                     config.setLogLevels(!configuredLevels.isEmpty() ? EnumSet.copyOf(configuredLevels) : EnumSet.noneOf(LogLevel.class));
                     config.mapLoggerName("net.minecraft.server.MinecraftServer", "Server");
                     config.mapLoggerNameFriendly("net.minecraft.server", s -> "Server/" + s);
@@ -1071,13 +980,13 @@ public class DiscordSRV extends JavaPlugin {
         reloadRoleAliases();
 
         // schedule slash commands to be updated later when plugins are ready (once the server had started up completely)
-        Bukkit.getScheduler().runTask(this, () -> Bukkit.getScheduler().runTaskAsynchronously(this, api::updateSlashCommands));
+        SchedulerUtil.runTask(this, () -> SchedulerUtil.runTaskAsynchronously(this, api::updateSlashCommands));
 
         // warn if the console channel is connected to a chat channel
         if (getMainTextChannel() != null && getConsoleChannel() != null && getMainTextChannel().getId().equals(getConsoleChannel().getId())) DiscordSRV.warning(LangUtil.InternalMessage.CONSOLE_CHANNEL_ASSIGNED_TO_LINKED_CHANNEL);
 
         // send server startup message
-        Bukkit.getScheduler().runTaskLater(this, () -> {
+        SchedulerUtil.runTaskLater(this, () -> {
             DiscordUtil.queueMessage(
                     getOptionalTextChannel("status"),
                     PlaceholderUtil.replacePlaceholdersToDiscord(LangUtil.Message.SERVER_STARTUP_MESSAGE.toString()),
@@ -1092,12 +1001,15 @@ public class DiscordSRV extends JavaPlugin {
         if (!isEnabled()) return;
 
         // start server watchdog
-        if (serverWatchdog != null && serverWatchdog.getState() != Thread.State.NEW) serverWatchdog.interrupt();
-        serverWatchdog = new ServerWatchdog();
-        serverWatchdog.start();
+        if (!SchedulerUtil.isFolia()) { // watchdog isn't useful on folia
+            if (serverWatchdog != null && serverWatchdog.getState() != Thread.State.NEW) serverWatchdog.interrupt();
+            serverWatchdog = new ServerWatchdog();
+            serverWatchdog.start();
+        }
 
         // start lag (tps) monitor
-        Bukkit.getServer().getScheduler().scheduleSyncRepeatingTask(this, new Lag(), 100L, 1L);
+        if (!SchedulerUtil.isFolia()) // cannot monitor global lag on folia
+            Bukkit.getServer().getScheduler().scheduleSyncRepeatingTask(this, new Lag(), 100L, 1L);
 
         // cancellation detector
         reloadCancellationDetector();
@@ -1107,7 +1019,7 @@ public class DiscordSRV extends JavaPlugin {
             try {
                 JdbcAccountLinkManager jdbcManager = new JdbcAccountLinkManager();
                 accountLinkManager = jdbcManager;
-                jdbcManager.migrateJSON();
+                jdbcManager.migrateFile();
             } catch (SQLException e) {
                 StringBuilder stringBuilder = new StringBuilder("JDBC account link backend failed to initialize: ");
 
@@ -1127,11 +1039,11 @@ public class DiscordSRV extends JavaPlugin {
                 for (String line : message.split("\n")) {
                     DiscordSRV.warning(line);
                 }
-                DiscordSRV.warning("Account link manager falling back to flat file");
-                accountLinkManager = new FileAccountLinkManager();
+                DiscordSRV.warning("Account link manager falling back to file backend");
+                accountLinkManager = new AppendOnlyFileAccountLinkManager();
             }
         } else {
-            accountLinkManager = new FileAccountLinkManager();
+            accountLinkManager = new AppendOnlyFileAccountLinkManager();
         }
         Bukkit.getPluginManager().registerEvents(accountLinkManager, this);
 
@@ -1156,6 +1068,7 @@ public class DiscordSRV extends JavaPlugin {
                 "github.scarsz.discordsrv.hooks.chat.ChattyChatHook",
                 "github.scarsz.discordsrv.hooks.chat.FancyChatHook",
                 "github.scarsz.discordsrv.hooks.chat.HerochatHook",
+                "github.scarsz.discordsrv.hooks.chat.NChatHook", // nChat Hook needs to work before LegendChat
                 "github.scarsz.discordsrv.hooks.chat.LegendChatHook",
                 "github.scarsz.discordsrv.hooks.chat.LunaChatHook",
                 "github.scarsz.discordsrv.hooks.chat.TownyChatHook",
@@ -1258,7 +1171,7 @@ public class DiscordSRV extends JavaPlugin {
         if (PluginUtil.pluginHookIsEnabled("PlaceholderAPI")) {
             try {
                 DiscordSRV.info(LangUtil.InternalMessage.PLUGIN_HOOK_ENABLING.toString().replace("{plugin}", "PlaceholderAPI"));
-                Bukkit.getScheduler().runTask(this, () -> {
+                SchedulerUtil.runTask(this, () -> {
                     try {
                         if (me.clip.placeholderapi.PlaceholderAPIPlugin.getInstance().getLocalExpansionManager().findExpansionByIdentifier("discordsrv").isPresent()) {
                             getLogger().warning("The DiscordSRV PlaceholderAPI expansion is no longer required.");
@@ -1398,7 +1311,7 @@ public class DiscordSRV extends JavaPlugin {
                 error("Failed to resync\n" + ExceptionUtils.getMessage(e));
             }
             Bukkit.getPluginManager().registerEvents(groupSynchronizationManager, this);
-            Bukkit.getScheduler().runTaskTimerAsynchronously(this,
+            SchedulerUtil.runTaskTimerAsynchronously(this,
                     () -> groupSynchronizationManager.resync(
                             GroupSynchronizationManager.SyncDirection.AUTHORITATIVE,
                             GroupSynchronizationManager.SyncCause.TIMER
@@ -1444,6 +1357,10 @@ public class DiscordSRV extends JavaPlugin {
         try {
             String finalShutdownFormat = shutdownFormat;
             executor.invokeAll(Collections.singletonList(() -> {
+
+                // serialize account links to disk
+                if (accountLinkManager != null) accountLinkManager.save();
+
                 // set server shutdown topics if enabled
                 if (config().getBoolean("ChannelTopicUpdaterChannelTopicsAtShutdownEnabled")) {
                     String time = TimeUtil.timeStamp();
@@ -1479,12 +1396,14 @@ public class DiscordSRV extends JavaPlugin {
                 HandlerList.unregisterAll(this);
 
                 // shutdown scheduler tasks
-                Bukkit.getScheduler().cancelTasks(this);
-                for (BukkitWorker activeWorker : Bukkit.getScheduler().getActiveWorkers()) {
-                    if (activeWorker.getOwner().equals(this)) {
-                        List<String> stackTrace = Arrays.stream(activeWorker.getThread().getStackTrace()).map(StackTraceElement::toString).collect(Collectors.toList());
-                        warning("a DiscordSRV scheduler task still active during onDisable: " + stackTrace.remove(0));
-                        debug(stackTrace);
+                SchedulerUtil.cancelTasks(this);
+                if (!SchedulerUtil.isFolia()) { // not implemented yet on folia
+                    for (BukkitWorker activeWorker : Bukkit.getScheduler().getActiveWorkers()) {
+                        if (activeWorker.getOwner().equals(this)) {
+                            List<String> stackTrace = Arrays.stream(activeWorker.getThread().getStackTrace()).map(StackTraceElement::toString).collect(Collectors.toList());
+                            warning("a DiscordSRV scheduler task still active during onDisable: " + stackTrace.remove(0));
+                            debug(stackTrace);
+                        }
                     }
                 }
 
@@ -1511,9 +1430,6 @@ public class DiscordSRV extends JavaPlugin {
 
                 // shutdown the update checker
                 if (updateChecker != null) updateChecker.shutdown();
-
-                // serialize account links to disk
-                if (accountLinkManager != null) accountLinkManager.save();
 
                 // close cancellation detectors
                 if (legacyCancellationDetector != null) legacyCancellationDetector.close();
@@ -1781,24 +1697,8 @@ public class DiscordSRV extends JavaPlugin {
         if (hasGoodGroup) userPrimaryGroup = userPrimaryGroup.substring(0, 1).toUpperCase() + userPrimaryGroup.substring(1);
 
         boolean reserializer = DiscordSRV.config().getBoolean("Experiment_MCDiscordReserializer_ToDiscord");
+        boolean webhookMessageDelivery = config().getBoolean("Experiment_WebhookChatMessageDelivery");
 
-        String username = player.getName();
-        if (!reserializer) username = DiscordUtil.escapeMarkdown(username);
-
-        String discordMessage = (hasGoodGroup
-                ? LangUtil.Message.CHAT_TO_DISCORD.toString()
-                : LangUtil.Message.CHAT_TO_DISCORD_NO_PRIMARY_GROUP.toString())
-                .replaceAll("%time%|%date%", TimeUtil.timeStamp())
-                .replace("%channelname%", channel != null ? channel.substring(0, 1).toUpperCase() + channel.substring(1) : "")
-                .replace("%primarygroup%", userPrimaryGroup)
-                .replace("%username%", username)
-                .replace("%usernamenoescapes%", MessageUtil.strip(player.getName()))
-                .replace("%world%", player.getWorld().getName())
-                .replace("%worldalias%", MessageUtil.strip(MultiverseCoreHook.getWorldAlias(player.getWorld().getName())));
-        discordMessage = PlaceholderUtil.replacePlaceholdersToDiscord(discordMessage, player);
-
-        String displayName = MessageUtil.strip(player.getDisplayName());
-        displayName = DiscordUtil.escapeMarkdown(displayName);
         String discordMessageContent;
         if (reserializer) {
             discordMessageContent = MessageUtil.reserializeToDiscord(message);
@@ -1806,41 +1706,90 @@ public class DiscordSRV extends JavaPlugin {
             discordMessageContent = MessageUtil.strip(MessageUtil.toLegacy(message));
         }
 
-        discordMessage = discordMessage
-                .replace("%displayname%", displayName)
-                .replace("%displaynamenoescapes%", MessageUtil.strip(player.getDisplayName()))
-                .replace("%message%", discordMessageContent);
-
-        discordMessage = processRegex(discordMessage);
-        if (discordMessage == null) return;
-
-        if (!reserializer) discordMessage = MessageUtil.strip(discordMessage);
+        // Modify the message's content with the declared Regexes
+        if (webhookMessageDelivery) {
+            discordMessageContent = processRegex(discordMessageContent);
+            if (discordMessageContent == null) return;
+        }
 
         if (config().getBoolean("DiscordChatChannelTranslateMentions")) {
-            discordMessage = DiscordUtil.convertMentionsFromNames(discordMessage, getMainGuild());
+            discordMessageContent = DiscordUtil.convertMentionsFromNames(discordMessageContent, getMainGuild());
         } else {
-            discordMessage = discordMessage.replace("@", "@\u200B"); // zero-width space
             discordMessageContent = discordMessageContent.replace("@", "@\u200B"); // zero-width space
         }
 
-        GameChatMessagePostProcessEvent postEvent = api.callEvent(new GameChatMessagePostProcessEvent(channel, discordMessage, player, preEvent.isCancelled(), event));
+        String processedMessage = discordMessageContent;
+
+        if (!webhookMessageDelivery) {
+            // If webhook delivery is not enable, we add all the placeholders
+            String username = player.getName();
+            if (!reserializer) username = DiscordUtil.escapeMarkdown(username);
+
+            String displayName = MessageUtil.strip(player.getDisplayName());
+
+            // Replace the internal placeholders in the message pattern
+            String discordMessagePattern = (hasGoodGroup
+                    ? LangUtil.Message.CHAT_TO_DISCORD.toString()
+                    : LangUtil.Message.CHAT_TO_DISCORD_NO_PRIMARY_GROUP.toString())
+                    .replace("%displayname%", DiscordUtil.escapeMarkdown(displayName))
+                    .replace("%displaynamenoescapes%", displayName)
+                    .replace("%username%", username)
+                    .replaceAll("%time%|%date%", TimeUtil.timeStamp())
+                    .replace("%channelname%", channel != null ? channel.substring(0, 1).toUpperCase() + channel.substring(1) : "")
+                    .replace("%primarygroup%", userPrimaryGroup)
+                    .replace("%usernamenoescapes%", MessageUtil.strip(player.getName()))
+                    .replace("%world%", player.getWorld().getName())
+                    .replace("%worldalias%", MessageUtil.strip(MultiverseCoreHook.getWorldAlias(player.getWorld().getName())));
+            // Replace the PAPI placeholders in the message pattern
+            discordMessagePattern = PlaceholderUtil.replacePlaceholdersToDiscord(discordMessagePattern, player);
+
+
+
+            /*
+            // Reserialize the message pattern, in the case the placeholders added more color codes.
+            // DiscordSRV is not ready for this yet. Leaving this here for when that faithful day comes upon us.
+            if (reserializer){
+                discordMessagePattern =
+                        MessageUtil.reserializeToDiscord(
+                                //Serialize into Components
+                                LegacyComponentSerializer.legacySection().deserialize(
+                                        //Replace $ with §
+                                        discordMessagePattern.replace(
+                                                LegacyComponentSerializer.AMPERSAND_CHAR,
+                                                LegacyComponentSerializer.SECTION_CHAR)
+                                ));
+            } else*/
+            // Strip the final message from any rouge color/style codes.
+            if (!reserializer) {
+                discordMessagePattern = MessageUtil.strip(discordMessagePattern);
+            }
+
+            // Replace the message after to avoid replacing rouge PAPI placeholders inside of the message's content
+            discordMessagePattern = discordMessagePattern
+                    .replace("%message%", discordMessageContent);
+
+            discordMessagePattern = processRegex(discordMessagePattern);
+            if (discordMessagePattern == null) return;
+
+            processedMessage = discordMessagePattern;
+        }
+
+        // Send the post process message event
+        GameChatMessagePostProcessEvent postEvent = api.callEvent(new GameChatMessagePostProcessEvent(channel, processedMessage, player, preEvent.isCancelled(), event));
         if (postEvent.isCancelled()) {
             debug(Debug.MINECRAFT_TO_DISCORD, "GameChatMessagePostProcessEvent was cancelled, message send aborted");
             return;
         }
         channel = postEvent.getChannel(); // update channel from event in case any listeners modified it
-        discordMessage = postEvent.getProcessedMessage(); // update message from event in case any listeners modified it
+        processedMessage = postEvent.getProcessedMessage(); // update message from event in case any listeners modified it
 
-        if (!config().getBoolean("Experiment_WebhookChatMessageDelivery")) {
-            if (channel == null) {
-                DiscordUtil.sendMessage(getOptionalTextChannel("global"), discordMessage);
-            } else {
-                DiscordUtil.sendMessage(getDestinationTextChannelForGameChannelName(channel), discordMessage);
-            }
+        // If the channel is null, replace it with the global channel
+        if (channel == null) channel = getOptionalChannel("global");
+        TextChannel destinationChannel = getDestinationTextChannelForGameChannelName(channel);
+
+        if (!webhookMessageDelivery) {
+            DiscordUtil.sendMessage(destinationChannel, processedMessage);
         } else {
-            if (channel == null) channel = getOptionalChannel("global");
-
-            TextChannel destinationChannel = getDestinationTextChannelForGameChannelName(channel);
 
             if (destinationChannel == null) {
                 debug(Debug.MINECRAFT_TO_DISCORD, "Failed to find Discord channel to forward message from game channel " + channel);
@@ -1852,15 +1801,7 @@ public class DiscordSRV extends JavaPlugin {
                 return;
             }
 
-            discordMessageContent = PlaceholderUtil.replacePlaceholdersToDiscord(discordMessageContent, player);
-            discordMessageContent = MessageUtil.stripLegacy(discordMessageContent);
-
-            if (config().getBoolean("DiscordChatChannelTranslateMentions")) discordMessageContent = DiscordUtil.convertMentionsFromNames(discordMessageContent, getMainGuild());
-
-            discordMessageContent = processRegex(discordMessageContent);
-            if (discordMessageContent == null) return;
-
-            WebhookUtil.deliverMessage(destinationChannel, player, discordMessageContent);
+            WebhookUtil.deliverMessage(destinationChannel, player, processedMessage);
         }
     }
 
@@ -2130,10 +2071,10 @@ public class DiscordSRV extends JavaPlugin {
             }
 
             if (!offlineUuidAvatarUrlNagged) {
-                DiscordSRV.error("Your AvatarUrl does not contain the {username} placeholder even though this server is using offline UUIDs.");
+                DiscordSRV.error("Your AvatarUrl config option does not contain the {username} placeholder even though this server is using offline UUIDs.");
                 DiscordSRV.error(offlineUrl + " will be used because the default value does not support offline mode servers");
-                DiscordSRV.error("You should set your AvatarUrl to " + offlineUrl + " (or another url that supports usernames) "
-                        + (defaultValue ? "to get rid of this error" : " to get avatars to work."));
+                DiscordSRV.error("You should set your AvatarUrl (in config.yml) to " + offlineUrl + " (or another url that supports usernames) "
+                        + (defaultValue ? "to get rid of this error" : "to get avatars to work."));
                 offlineUuidAvatarUrlNagged = true;
             }
         }
@@ -2222,21 +2163,9 @@ public class DiscordSRV extends JavaPlugin {
 
     private static File playerDataFolder = null;
     public static int getTotalPlayerCount() {
-        if (playerDataFolder == null && Bukkit.getWorlds().size() > 0) {
-            playerDataFolder = new File(Bukkit.getWorlds().get(0).getWorldFolder().getAbsolutePath(), "/playerdata");
-        }
-
+        if (playerDataFolder == null) return 0;
         File[] playerFiles = playerDataFolder.listFiles(f -> f.getName().endsWith(".dat"));
         return playerFiles != null ? playerFiles.length : 0;
-    }
-
-    /**
-     * @return Whether file system is limited. If this is {@code true}, DiscordSRV will limit itself to not
-     * modifying the server's plugins folder. This is used to prevent uploading of plugins via the console channel.
-     */
-    public static boolean isFileSystemLimited() {
-        return System.getenv("LimitFS") != null || System.getProperty("LimitFS") != null
-                || !config().getBooleanElse("DiscordConsoleChannelAllowPluginUpload", false);
     }
 
     /**

@@ -1,23 +1,21 @@
-/*-
- * LICENSE
- * DiscordSRV
- * -------------
- * Copyright (C) 2016 - 2021 Austin "Scarsz" Shapiro
- * -------------
+/*
+ * DiscordSRV - https://github.com/DiscordSRV/DiscordSRV
+ *
+ * Copyright (C) 2016 - 2022 Austin "Scarsz" Shapiro
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as
  * published by the Free Software Foundation, either version 3 of the
  * License, or (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public
  * License along with this program.  If not, see
  * <http://www.gnu.org/licenses/gpl-3.0.html>.
- * END
  */
 
 package github.scarsz.discordsrv.api;
@@ -25,11 +23,7 @@ package github.scarsz.discordsrv.api;
 import com.google.common.collect.Sets;
 import com.hrakaroo.glob.GlobPattern;
 import github.scarsz.discordsrv.DiscordSRV;
-import github.scarsz.discordsrv.api.commands.CommandRegistrationError;
-import github.scarsz.discordsrv.api.commands.PluginSlashCommand;
-import github.scarsz.discordsrv.api.commands.SlashCommand;
-import github.scarsz.discordsrv.api.commands.SlashCommandPriority;
-import github.scarsz.discordsrv.api.commands.SlashCommandProvider;
+import github.scarsz.discordsrv.api.commands.*;
 import github.scarsz.discordsrv.api.events.Event;
 import github.scarsz.discordsrv.api.events.GuildSlashCommandUpdateEvent;
 import github.scarsz.discordsrv.util.LangUtil;
@@ -51,14 +45,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.Collections;
-import java.util.EnumSet;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.stream.Collectors;
@@ -220,7 +207,11 @@ public class ApiManager extends ListenerAdapter {
             long pluginCount = conflictResolvedCommands.values().stream().map(PluginSlashCommand::getPlugin).distinct().count();
             long registeredGuilds = all.stream().filter(Objects::nonNull).count();
             int totalGuilds = DiscordSRV.getPlugin().getJda().getGuilds().size();
-            DiscordSRV.info("Successfully registered " + successful + " slash commands (" + finalConflictingCommands + " conflicted) for " + pluginCount + " plugins in " + registeredGuilds + "/" + totalGuilds + " guilds (" + finalCancelledGuilds + " cancelled)");
+            if (successful > 0) {
+                DiscordSRV.info("Successfully registered " + successful + " slash commands (" + finalConflictingCommands + " conflicted) for " + pluginCount + " plugins in " + registeredGuilds + "/" + totalGuilds + " guilds (" + finalCancelledGuilds + " cancelled)");
+            } else {
+                DiscordSRV.info("Cleared all pre-existing slash commands in " + registeredGuilds + "/" + totalGuilds + " guilds (" + finalCancelledGuilds + " cancelled)");
+            }
 
             if (errors.isEmpty()) return;
 
@@ -296,13 +287,16 @@ public class ApiManager extends ListenerAdapter {
         }
         providers.addAll(slashCommandProviders);
 
+        boolean handled = false;
         for (SlashCommandPriority priority : SlashCommandPriority.values()) {
             for (SlashCommandProvider provider : providers) {
-                handleSlashCommandEvent(provider, commandData, event, priority);
+                handled |= handleSlashCommandEvent(provider, commandData, event, priority);
             }
         }
 
-        ackCheck(event, commandData.getPlugin());
+        if (handled) {
+            ackCheck(event, commandData.getPlugin());
+        }
     }
 
     /**
@@ -311,8 +305,9 @@ public class ApiManager extends ListenerAdapter {
      * @param commandData the {@link PluginSlashCommand} data associated with this {@link SlashCommandEvent}
      * @param event the {@link SlashCommandEvent} to be handled
      * @param priority only handlers with the given {@link SlashCommandPriority} will be invoked
+     * @return whether a matching handler was found on the given provider
      */
-    private void handleSlashCommandEvent(SlashCommandProvider provider, PluginSlashCommand commandData, SlashCommandEvent event, SlashCommandPriority priority) {
+    private boolean handleSlashCommandEvent(SlashCommandProvider provider, PluginSlashCommand commandData, SlashCommandEvent event, SlashCommandPriority priority) {
         for (Method method : provider.getClass().getMethods()) {
             for (SlashCommand slashCommand : method.getAnnotationsByType(SlashCommand.class)) {
                 if (slashCommand.priority() != priority) continue;
@@ -326,8 +321,10 @@ public class ApiManager extends ListenerAdapter {
                     event.deferReply(slashCommand.deferEphemeral())
                             .queue(hook -> invokeMethod(method, provider, event));
                 }
+                return true;
             }
         }
+        return false;
     }
 
     /**
@@ -394,7 +391,6 @@ public class ApiManager extends ListenerAdapter {
             ));
         }
     }
-
 
     /**
      * <b>This must be executed before DiscordSRV's JDA is ready! (before DiscordSRV enables fully)</b><br/>
